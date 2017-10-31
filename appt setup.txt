@@ -46,7 +46,3 @@ fit <- rpart(kept ~ risk2 + tod + age2 + location_name + Day + apptDiff, data=ap
 fit <- cforest(as.factor(kept) ~ age2 + risk2 + tod + location_name + event + apptDiff,
 +                data = appt,
 +                controls=cforest_unbiased(ntree=50, mtry=1))
-
-Create column to convert day of week to number
-Create column to apptDiff to numbered groups, 1 day, 2 day, 3 day, 4 day, 5-7, 7-14, 15+
-run numbers for different clinics
