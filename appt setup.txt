@@ -33,16 +33,17 @@ aggregate(kept ~ age2 + tod, data=appt, FUN=function(x) {sum(x)/length(x)})
 
 #creates table split of show/no-show % by gender of patient, rounds answer to one decimal places.
 apply(
-+     prop.table(table(appt$sex, appt$appt_kept_ind),1)*100,
-+     2,
-+     function(u) sprintf( "%.1f%%", u ) 
-+ )
+      prop.table(table(appt$sex, appt$appt_kept_ind),1)*100,
+      2,
+      function(u) sprintf( "%.1f%%", u ) 
+     )
 
 
 fit <- rpart(kept ~ risk2 + tod + age2 + location_name + Day + apptDiff, data=appt, method="class")
 
+fancyRpartPlot(fit)
 
 
 fit <- cforest(as.factor(kept) ~ age2 + risk2 + tod + location_name + event + apptDiff,
-+                data = appt,
-+                controls=cforest_unbiased(ntree=50, mtry=1))
+                data = appt,
+                controls=cforest_unbiased(ntree=50, mtry=1))
