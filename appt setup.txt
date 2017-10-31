@@ -1,0 +1,52 @@
+setwd("//ppfs/eborn/Documents/appt")
+install.packages('rpart')
+install.packages('rattle')
+install.packages('rpart.plot')
+install.packages('RColorBrewer')
+install.packages('randomForest')
+library(rpart)
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+library(randomForest)
+ 
+appt = read.csv("apptdata.csv") 
+
+appt$apptDiff <- abs(appt$apptDiff)
+appt$tod <- 0 #morning 7-11:30
+appt$tod[appt$begintime < 1500 & appt$begintime >= 1140] <- 1 #mid day 1140-3
+appt$tod[appt$begintime >= 1510] <- 2 #evening 3:10-7
+appt$age2 <- 0
+appt$age2[appt$Age >= 17 & appt$Age <=21] <- 1
+appt$age2[appt$Age >= 22 & appt$Age <=25] <- 2
+appt$age2[appt$Age >= 26 & appt$Age <=30] <- 3
+appt$age2[appt$Age >= 31] <- 4
+appt$kept <- 0
+appt$kept[appt$appt_kept_ind == 'Y'] <- 1
+appt$risk2[appt$risk == 'Low'] <- 0
+appt$risk2[appt$risk == 'Low-Medium'] <- 1
+appt$risk2[appt$risk == 'Medium'] <- 2
+appt$risk2[appt$risk == 'Medium-High'] <- 3
+appt$risk2[appt$risk == 'High'] <- 4
+
+aggregate(kept ~ age2 + tod, data=appt, FUN=function(x) {sum(x)/length(x)})
+
+#creates table split of show/no-show % by gender of patient, rounds answer to one decimal places.
+apply(
++     prop.table(table(appt$sex, appt$appt_kept_ind),1)*100,
++     2,
++     function(u) sprintf( "%.1f%%", u ) 
++ )
+
+
+fit <- rpart(kept ~ risk2 + tod + age2 + location_name + Day + apptDiff, data=appt, method="class")
+
+
+
+fit <- cforest(as.factor(kept) ~ age2 + risk2 + tod + location_name + event + apptDiff,
++                data = appt,
++                controls=cforest_unbiased(ntree=50, mtry=1))
+
+Create column to convert day of week to number
+Create column to apptDiff to numbered groups, 1 day, 2 day, 3 day, 4 day, 5-7, 7-14, 15+
+run numbers for different clinics
