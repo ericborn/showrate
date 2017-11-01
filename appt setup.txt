@@ -1,49 +1,161 @@
-setwd("//ppfs/eborn/Documents/appt")
+#setting working directory and installing packages for later use
+setwd("e:/Appt")
 install.packages('rpart')
 install.packages('rattle')
 install.packages('rpart.plot')
 install.packages('RColorBrewer')
 install.packages('randomForest')
+install.packages('party')
 library(rpart)
 library(rattle)
 library(rpart.plot)
 library(RColorBrewer)
 library(randomForest)
- 
-appt = read.csv("apptdata.csv") 
+library(party)
 
-appt$apptDiff <- abs(appt$apptDiff)
-appt$tod <- 0 #morning 7-11:30
-appt$tod[appt$begintime < 1500 & appt$begintime >= 1140] <- 1 #mid day 1140-3
-appt$tod[appt$begintime >= 1510] <- 2 #evening 3:10-7
-appt$age2 <- 0
-appt$age2[appt$Age >= 17 & appt$Age <=21] <- 1
-appt$age2[appt$Age >= 22 & appt$Age <=25] <- 2
-appt$age2[appt$Age >= 26 & appt$Age <=30] <- 3
-appt$age2[appt$Age >= 31] <- 4
-appt$kept <- 0
-appt$kept[appt$appt_kept_ind == 'Y'] <- 1
-appt$risk2[appt$risk == 'Low'] <- 0
-appt$risk2[appt$risk == 'Low-Medium'] <- 1
-appt$risk2[appt$risk == 'Medium'] <- 2
-appt$risk2[appt$risk == 'Medium-High'] <- 3
-appt$risk2[appt$risk == 'High'] <- 4
+#importing raw data pulled via SQL and exported to csv
+train <- read.csv("apptdata.csv")
+test <- read.csv("appttest.csv")
 
-aggregate(kept ~ age2 + tod, data=appt, FUN=function(x) {sum(x)/length(x)})
+#view the structure of the table
+str(train)
+
+#use absolute to change column to positive intergers
+train$apptDiff <- abs(train$apptDiff)
+test$apptDiff <- abs(test$apptDiff)
+
+#setting up tod (time of day) column
+train$tod <- 0 #morning 7-11:30
+train$tod[train$begintime < 1500 & train$begintime >= 1140] <- 1 #mid day 1140-3
+train$tod[train$begintime >= 1510] <- 2 #evening 3:10-7
+
+test$tod <- 0 #morning 7-11:30
+test$tod[test$begintime < 1500 & test$begintime >= 1140] <- 1 #mid day 1140-3
+test$tod[test$begintime >= 1510] <- 2 #evening 3:10-7
+
+#creating age brackets
+train$age2 <- 0
+train$age2[train$Age >= 17 & train$Age <=21] <- 1
+train$age2[train$Age >= 22 & train$Age <=25] <- 2
+train$age2[train$Age >= 26 & train$Age <=30] <- 3
+train$age2[train$Age >= 31] <- 4
+
+test$age2 <- 0
+test$age2[test$Age >= 17 & test$Age <=21] <- 1
+test$age2[test$Age >= 22 & test$Age <=25] <- 2
+test$age2[test$Age >= 26 & test$Age <=30] <- 3
+test$age2[test$Age >= 31] <- 4
+
+#create column for grouping creation of appointment and date of appointment
+train$appt2 <- 0
+train$appt2[train$apptDiff >= 0 & train$apptDiff <= 1] <- 1
+train$appt2[train$apptDiff >= 2 & train$apptDiff <= 3] <- 2
+train$appt2[train$apptDiff >= 4 & train$apptDiff <= 6] <- 3
+train$appt2[train$apptDiff >= 7] <- 4
+
+test$appt2 <- 0
+test$appt2[test$apptDiff >= 0 & test$apptDiff <= 1] <- 1
+test$appt2[test$apptDiff >= 2 & test$apptDiff <= 3] <- 2
+test$appt2[test$apptDiff >= 4 & test$apptDiff <= 6] <- 3
+test$appt2[test$apptDiff >= 7] <- 4
+
+#mark missed appointments as 0, kept as 1, 
+train$kept <- 0
+train$kept[train$appt_kept_ind == 'Y'] <- 1
+
+test$kept <- 0
+test$kept[test$appt_kept_ind == 'Y'] <- 1
+
+#converting patient no-show risk to numeric values
+train$riskLevel[train$risk == 'Low'] <- 0
+train$riskLevel[train$risk == 'Low-Medium'] <- 1
+train$riskLevel[train$risk == 'Medium'] <- 2
+train$riskLevel[train$risk == 'Medium-High'] <- 3
+train$riskLevel[train$risk == 'High'] <- 4
+
+test$riskLevel[test$risk == 'Low'] <- 0
+test$riskLevel[test$risk == 'Low-Medium'] <- 1
+test$riskLevel[test$risk == 'Medium'] <- 2
+test$riskLevel[test$risk == 'Medium-High'] <- 3
+test$riskLevel[test$risk == 'High'] <- 4
+
+#view the structure of the table after modifications
+str(train)
+
+#display total number of patients who missed and kept their appointments, then display as percentages using proportions
+table(train$kept)
+prop.table(table(train$kept))
+
+#View kept appointment proportions based on patients gender
+prop.table(table(train$sex, train$kept), 1)
+
+#Create a function that takes the subset vector as input and applies both the sum and length commands to it and then does the #division to give us a proportion of patients based on their age bracket and the time of day of their appointment to evaluate
+#if both factors together play a role in showing to an appointment
+#multiplied by 100 and rounded to create a whole for easier viewing
+aggregate(kept ~ age2 + tod, data=train, FUN=function(x) round({sum(x)/length(x) * 100}))
+
+#While there was a slight variance between certain ages and time of day, for the most part it was pretty consistent at 55-57%
+
+#lets evaluate the patients risk level and the time of day
+aggregate(kept ~ riskLevel + tod, data=train, FUN=function(x) round({sum(x)/length(x) * 100}))
+
+#use rpart to create a model based on the patients risk level, time of date, age bracket 
+#and how far out their appointment was booked, then view it using fancyRpartPlot
+fit <- rpart(kept ~ riskLevel + tod + age2 + appt2, 
+	     data=train, 
+	     method="class")
+fancyRpartPlot(fit)
+
+#use the rpart prediction function on the test dataframe
+Prediction <- predict(fit, test, type = "class")
+
+#compare prediction with what actually happened
+predict <- data.frame(kept = test$kept, keptPred = Prediction)
+
+#create a new column that compares actual results with prediction
+predict$accu[predict$kept == predict$keptPred] <- 1
+predict$accu[predict$kept != predict$keptPred] <- 0
+
+#view the accuracy
+prop.table(table(predict$accu))
+
+#lets compare random forst with rpart for accuracy
+#set seed for reproducability
+set.seed(299)
+
+#using importance to compare variables for their level of influence and setting the number of trees to 2000
+#If you are using a large dataset reducing the number of trees, using nodesize or sampsize may be necessary.
+fit <- randomForest(as.factor(kept) ~ age2 + riskLevel + tod + location_name + event + apptDiff,
+                data = test,
+                importance=TRUE,
+		ntree=2000)
+#view variable influence
+varImpPlot(fit)
+
+#Replace our prediction values
+Prediction <- predict(fit, test)
+predict <- data.frame(kept = test$kept, keptPred = Prediction)
+predict$accu[predict$kept == predict$keptPred] <- 1
+predict$accu[predict$kept != predict$keptPred] <- 0
+prop.table(table(predict$accu))
+
+#using random forest increased our accuracy by over 10%!
+
+#lets try using conditional forest to compare against random forest
+fit <- cforest(as.factor(kept) ~ age2 + riskLevel + tod + location_name + event + apptDiff,
+                data = test,
+                controls=cforest_unbiased(ntree=50, mtry=1))
+
+Prediction <- predict(fit, test)
+predict <- data.frame(kept = test$kept, keptPred = Prediction)
+predict$accu[predict$kept == predict$keptPred] <- 1
+predict$accu[predict$kept != predict$keptPred] <- 0
+prop.table(table(predict$accu))
+
+
 
 #creates table split of show/no-show % by gender of patient, rounds answer to one decimal places.
 apply(
-      prop.table(table(appt$sex, appt$appt_kept_ind),1)*100,
-      2,
-      function(u) sprintf( "%.1f%%", u ) 
-     )
-
-
-fit <- rpart(kept ~ risk2 + tod + age2 + location_name + Day + apptDiff, data=appt, method="class")
-
-fancyRpartPlot(fit)
-
-
-fit <- cforest(as.factor(kept) ~ age2 + risk2 + tod + location_name + event + apptDiff,
-                data = appt,
-                controls=cforest_unbiased(ntree=50, mtry=1))
+     prop.table(table(train$sex, train$appt_kept_ind),1)*100,
+     2,     function(u) sprintf( "%.1f%%", u ) 
+)
