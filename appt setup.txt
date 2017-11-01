@@ -140,22 +140,3 @@ predict$accu[predict$kept != predict$keptPred] <- 0
 prop.table(table(predict$accu))
 
 #using random forest increased our accuracy by over 10%!
-
-#lets try using conditional forest to compare against random forest
-fit <- cforest(as.factor(kept) ~ age2 + riskLevel + tod + location_name + event + apptDiff,
-                data = test,
-                controls=cforest_unbiased(ntree=50, mtry=1))
-
-Prediction <- predict(fit, test)
-predict <- data.frame(kept = test$kept, keptPred = Prediction)
-predict$accu[predict$kept == predict$keptPred] <- 1
-predict$accu[predict$kept != predict$keptPred] <- 0
-prop.table(table(predict$accu))
-
-
-
-#creates table split of show/no-show % by gender of patient, rounds answer to one decimal places.
-apply(
-     prop.table(table(train$sex, train$appt_kept_ind),1)*100,
-     2,     function(u) sprintf( "%.1f%%", u ) 
-)
