@@ -14,8 +14,8 @@ library(randomForest)
 library(party)
 
 #importing raw data pulled via SQL and exported to csv
-train <- read.csv("apptdata.csv")
-test <- read.csv("appttest.csv")
+train <- read.csv("appt_train.csv")
+test <- read.csv("appt_test.csv")
 
 #view the structure of the table
 str(train)
