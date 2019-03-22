@@ -1,0 +1,354 @@
+---
+title: "Showrate Notebook"
+output: html_notebook
+---
+This is the project file for my appointment showrate prediciton project.
+
+First step is to set our working directory then install packages and libraries that will be used later on in the project.
+```{r}
+setwd("c:/Appt")
+install.packages('rpart')
+install.packages('rattle')
+install.packages('rpart.plot')
+install.packages('RColorBrewer')
+install.packages('randomForest')
+install.packages('party')
+library(rpart)
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+library(randomForest)
+library(party)
+```
+
+Before we can begin any work in R we need to extract our dataset from the database. Columns include whether the appointment was kept or not, so we can check our predicitons, age of the patient, day of the week the appointment was on, the number of days between the appointment being scheduled and the appointment itself, time of the day, type of appointment, location of the clinic and the risk factor of the patient.
+
+```{sql}
+--============================================= 
+-- Author:    Eric Born 
+-- Create date: 1 Nov 2017
+-- Last Modified: 21 March 2019
+-- Modifications: 21 Mar 2019 - Cleaned up code, removed commented sections
+
+-- Description: Used to extract appointment related data for analysis with R
+-- =============================================
+USE NGProd
+SELECT 
+	     p.person_id
+		,'kept' =
+	     CASE
+			WHEN a.appt_kept_ind = 'y' THEN 1 --Kept appointment
+			ELSE 0 --Missed appointment
+		END
+	   ,'age' = (CONVERT(int,CONVERT(char(8),appt_date,112))-CONVERT(char(8),p.date_of_birth,112))/10000 
+	   ,'day' = 
+		 CASE 
+			WHEN DATEPART(dw, appt_date) = (2) THEN 'Monday'
+			WHEN DATEPART(dw, appt_date) = (3) THEN 'Tuesday'
+			WHEN DATEPART(dw, appt_date) = (4) THEN 'Wednesday'
+			WHEN DATEPART(dw, appt_date) = (5) THEN 'Thursday'
+			WHEN DATEPART(dw, appt_date) = (6) THEN 'Friday'
+			WHEN DATEPART(dw, appt_date) = (7) THEN 'Saturday'
+		 END
+		 ,DATEDIFF(DAY,a.create_timestamp, a.appt_date) AS apptDiff 
+		 ,a.begintime AS 'time', e.event, lm.location_name AS 'loc' 
+		 ,pt.risk		 
+INTO #t --drop table #t
+FROM appointments a
+JOIN events e					ON a.event_id	 = e.event_id
+JOIN ppreporting.dbo.loc lm			ON a.location_id = lm.location_id
+JOIN ppreporting.dbo.pt_risk pt ON a.person_id	 = pt.person_id
+JOIN person p					ON a.person_id	 = p.person_id
+WHERE appt_date >= '20180101' AND appt_date <= '20181231'
+AND   p.last_name NOT IN ('Test', 'zztest', '4.0Test', 'Test OAS', '3.1test', 'chambers test', 'zztestadult')
+AND a.delete_ind = 'N' AND a.cancel_ind = 'N'
+--Eliminating walk-in's as they are already at the clinic and cannot be a no-show
+AND e.event NOT IN ('Walk-In Non Exam', 'Walk-In Exam', 'Walk-In MA', 'Walk-In ECP'
+					,'Same Day-Exam', 'Same Day-Non Exam',	'FP-Satellite'
+					,'Same Day-MA', 'Same Day-Extended', 'Same Day-Procedure' 
+					,'Z-Clinic Closed', 'Blocked', 'Z-Staff Meeting/Downtime')
+
+--Removes any appointments with a create date after the appointment date, which are invalid
+DELETE FROM #t
+WHERE apptdiff < 0
+
+--drop table #train
+--Creates a training set, approx 70% of total records
+WITH train AS
+(
+SELECT kept, age, day, apptDiff, time, event, loc, risk
+,ROW_NUMBER() OVER(ORDER BY person_id) AS Row#
+FROM #t
+)
+SELECT kept, age, day, apptDiff, time, event, loc, risk
+INTO #train
+FROM train
+WHERE Row# <= 226231;
+
+--drop table #test
+--Creates a testing set, approx 30% of total records
+WITH test AS
+(
+SELECT kept, age, day, apptDiff, time, event, loc, risk
+,ROW_NUMBER() OVER(ORDER BY person_id) AS Row#
+FROM #t
+)
+SELECT kept, age, day, apptDiff, time, event, loc, risk
+INTO #test
+FROM test
+WHERE Row# > 226231;
+
+--Outputs to be saved to csv
+SELECT * FROM #train
+SELECT * FROM #test
+```
+
+The risk factor is assigned to the patient each night based upon their appointment history. A SQL job fires a stored procedure which updates a table containing the the patients current risk factor. Patients with 90% or greater show-rate are rated as low, 89-76% are rated low-medium, 75-66% are rated medium, 65-51 are rated medium-high and patients with 50% or less show-rate are rated high risk.
+
+```{sql}
+/****** Object:  StoredProcedure [dbo].[Risk_Index]    Script Date: 3/21/2019 3:29:50 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+--============================================= 
+-- Author:    Eric Born 
+-- Create date: 1 February 2016 
+-- Description:  Calculates patient show/no-show ratio and risk. 
+-- Rebuilds table each day to ensure all previous show/no show data is captured.
+-- Low risk			100-90% show rate
+-- Low-Medium risk	89-76%  show rate
+-- Medium risk		75-66%  show rate
+-- Medium-High risk	65-51%  show rate
+-- High risk		50-0%	show rate
+-- =============================================
+
+ALTER PROCEDURE [dbo].[Risk_Index] 
+
+AS 
+BEGIN 
+
+--
+drop table pt_risk
+--Use fixed date range as we want all appointment data for all patients
+DECLARE @startDate  date = '20060101'
+DECLARE @endDate	date = '20201231'
+
+--Create table to store risk data
+CREATE TABLE pt_risk
+			(
+				person_id		UNIQUEIDENTIFIER	NULL,
+				name			VARCHAR(MAX)		NULL,
+				risk			VARCHAR(15)			NULL,
+				total_appts		INT					NULL,
+				show			INT					NULL,
+				no_show			INT					NULL,
+				canceled		INT					NULL,
+				showR			INT					NULL,
+				no_showR		INT					NULL,
+				canceledR		INT					NULL
+			)
+--Gather all distinct patients
+INSERT INTO pt_risk
+	SELECT DISTINCT a.person_id as person_id,
+	CONCAT (first_name, ' ', last_name) as name,
+	NULL					AS risk,
+	0						AS total_appts,
+	0						AS show,
+	0						AS no_show,
+	0						AS canceled,
+	0						AS showR,
+	0						AS no_showR,
+	0						AS canceledR
+	from NGProd.dbo.appointments a
+	where a.appt_date >= convert(date,@startDate) and a.appt_date <= convert(date,@endDate) and a.event_id != '6257266B-ECD8-40FC-9BBB-0BEFFBE64840' 
+	and enc_id IS NOT NULL and a.last_name NOT LIKE '%test%'
+
+--TOTAL appointments during set time period
+--exclude reschedules as they technically close 1st appt and create a 2nd
+SELECT a.person_id AS pid, COUNT(a.person_id) AS num 
+INTO #temp1 
+FROM NGProd.dbo.appointments a
+join pt_risk p on p.person_id = a.person_id
+where a.appt_date >= @startDate and a.appt_date <= @endDate and a.event_id != '6257266B-ECD8-40FC-9BBB-0BEFFBE64840' and a.resched_ind = 'N'
+group by a.person_id
+
+--Add TOTAL appointment count to risk table
+UPDATE pt_risk
+set total_appts = t.num
+from pt_risk p
+join #temp1 t
+on p.person_id = t.pid 
+
+--KEPT appointments during set time period
+SELECT a.person_id AS pid, COUNT(a.person_id) AS num 
+INTO #temp2 
+FROM NGProd.dbo.appointments a
+join pt_risk p on p.person_id = a.person_id
+where a.appt_date >= @startDate and a.appt_date <= @endDate and a.event_id != '6257266B-ECD8-40FC-9BBB-0BEFFBE64840'
+and a.appt_kept_ind = 'Y' and a.resched_ind = 'N' and a.last_name NOT LIKE '%test%' and a.enc_id NOT LIKE 'NULL'
+group by a.person_id
+
+--Add KEPT appointment kept count to risk table
+UPDATE pt_risk
+set show = t.num
+from pt_risk p
+join #temp2 t
+on p.person_id = t.pid
+
+--CANCELED appointments during set time period
+SELECT a.person_id AS pid, COUNT(a.person_id) AS num 
+INTO #temp3
+FROM NGProd.dbo.appointments a
+join pt_risk p on p.person_id = a.person_id
+where a.appt_date >= @startDate and a.appt_date <= @endDate and a.event_id != '6257266B-ECD8-40FC-9BBB-0BEFFBE64840'
+and a.appt_kept_ind = 'N' and a.resched_ind = 'N' and a.delete_ind = 'N' and a.cancel_ind = 'Y' and a.last_name NOT LIKE '%test%'
+group by a.person_id
+
+--Add CANCELED appt count to risk table
+UPDATE pt_risk
+set canceled = t.num
+from pt_risk p
+join #temp3 t
+on p.person_id = t.pid
+
+--MISSED appointments during set time period
+SELECT a.person_id AS pid, COUNT(a.person_id) AS num 
+INTO #temp4 
+FROM NGProd.dbo.appointments a
+join pt_risk p on p.person_id = a.person_id
+where a.appt_date >= @startDate and a.appt_date <= @endDate and a.event_id != '6257266B-ECD8-40FC-9BBB-0BEFFBE64840'
+and a.appt_kept_ind = 'N' and a.resched_ind = 'N' and a.delete_ind = 'N' and a.cancel_ind = 'N' and a.last_name NOT LIKE '%test%'
+group by a.person_id
+
+--Add MISSED appt count to risk table
+UPDATE pt_risk
+set no_show = t.num
+from pt_risk p
+join #temp4 t
+on p.person_id = t.pid
+
+--Calculate show, no-show and cancel percents
+SELECT person_id, ((100 * show) / NULLIF(total_appts , 0)) AS showR, ((100 * no_show) / NULLIF(total_appts , 0)) AS no_showR, ((100 * canceled) / NULLIF(total_appts , 0)) AS canceledR 
+INTO #temp5
+FROM pt_risk
+
+UPDATE pt_risk
+SET no_showR = t.no_showR, canceledR = t.canceledR, showR = t.showR
+FROM pt_risk p
+JOIN #temp5 t
+ON p.person_id = t.person_id
+
+--Apply risk based on show percents
+SELECT showR, risk = 
+	CASE WHEN showR >= 90 THEN 'Low'
+		 WHEN showR	>= 76 and showR <= 89 THEN 'Low-Medium'
+		 WHEN showR	>= 66 and showR <= 75 THEN 'Medium'
+		 WHEN showR	>= 51 and showR <= 65 THEN 'Medium-High'
+		 ELSE 'High'
+		 END, 
+	person_id
+INTO #temp6 
+FROM pt_risk 
+ 
+UPDATE pt_risk
+SET risk = t.risk
+FROM pt_risk p
+JOIN #temp6 t
+ON p.person_id = t.person_id
+
+select * from pt_risk
+
+drop table #temp1
+drop table #temp2
+drop table #temp3
+drop table #temp4
+drop table #temp5
+drop table #temp6
+
+END
+```
+
+Now we're ready to move into R and our first step is to import the data contained in the two csv files we just created from our database using SQL. 
+
+After importing our data we use str() to view the structure of the test table. We can see it has 8 columns previous discussed and contains ~97k rows.
+```{r}
+train <- read.csv("appt_train.csv")
+test <- read.csv("appt_test.csv")
+str(test)
+```
+
+Since the time column contains so many different appointment times we're going to split the data into three buckets, morning from 7-11:30 AM, 11:40-3 PM and later than 3:10. Since we have both a training and test set we'll perform the same operations on both.
+
+```{r}
+train$tod <- 0 #morning 7-11:30
+train$tod[train$time < 1500 & train$time >= 1140] <- 1 #mid day 1140-3
+train$tod[train$time >= 1510] <- 2 #evening 3:10-7
+
+test$tod <- 0 #morning 7-11:30
+test$tod[test$time < 1500 & test$time >= 1140] <- 1 #mid day 1140-3
+test$tod[test$time >= 1510] <- 2 #evening 3:10-7
+
+str(test)
+```
+We can see that we now have a 9th column called tod (Time of Day). We're going use the same bucketing technique for our age, apptDiff and convert our risk column into numerical values.
+
+```{r}
+#creating age buckets
+train$age2 <- 0
+train$age2[train$age >= 17 & train$age <=21] <- 1
+train$age2[train$age >= 22 & train$age <=25] <- 2
+train$age2[train$age >= 26 & train$age <=30] <- 3
+train$age2[train$age >= 31] <- 4
+
+test$age2 <- 0
+test$age2[test$age >= 17 & test$age <=21] <- 1
+test$age2[test$age >= 22 & test$age <=25] <- 2
+test$age2[test$age >= 26 & test$age <=30] <- 3
+test$age2[test$age >= 31] <- 4
+
+#create column for grouping creation of appointment and date of appointment
+train$appt2 <- 0
+train$appt2[train$apptDiff >= 0 & train$apptDiff <= 3] <- 1
+train$appt2[train$apptDiff >= 4 & train$apptDiff <= 8] <- 2
+train$appt2[train$apptDiff >= 9 & train$apptDiff <= 15] <- 3
+train$appt2[train$apptDiff >= 16] <- 4
+
+test$appt2 <- 0
+test$appt2[test$apptDiff >= 0 & test$apptDiff <= 3] <- 1
+test$appt2[test$apptDiff >= 4 & test$apptDiff <= 8] <- 2
+test$appt2[test$apptDiff >= 9 & test$apptDiff <= 15] <- 3
+test$appt2[test$apptDiff >= 16] <- 4
+
+#converting patient no-show risk to numeric values
+train$riskLevel[train$risk == 'Low'] <- 0
+train$riskLevel[train$risk == 'Low-Medium'] <- 1
+train$riskLevel[train$risk == 'Medium'] <- 2
+train$riskLevel[train$risk == 'Medium-High'] <- 3
+train$riskLevel[train$risk == 'High'] <- 4
+
+test$riskLevel[test$risk == 'Low'] <- 0
+test$riskLevel[test$risk == 'Low-Medium'] <- 1
+test$riskLevel[test$risk == 'Medium'] <- 2
+test$riskLevel[test$risk == 'Medium-High'] <- 3
+test$riskLevel[test$risk == 'High'] <- 4
+
+str(train)
+```
+You can see we now have three additional columns for each of those new buckets. Lets actually take a look at some of the data. Assessing our kept column in table format we can see there are a total of ~87K 0's (no-shows) and ~138K 1's (kept appointments) and using proportions we see a 38%/61% split.
+
+```{r}
+table(train$kept)
+prop.table(table(train$kept))
+```
+Next lets create a function that takes the subset vector as input and applies both the sum and length commands, then does the division to give us a proportion of patients based on their age bracket (age2 column) and the time of day (tod) of their appointment to evaluate if both factors together play a role in showing to an appointment. Finally the result is multiplied by 100 and rounded to create a whole number for easier viewing.
+```{r}
+agg <- aggregate(kept ~ age2 + tod, data=train, FUN=function(x) round({sum(x)/length(x) * 100}))
+print(agg)
+```
+Lets now check out the averages across time of day and by age bucket.
+```{r}
+tapply(agg$kept, agg$tod, mean)
+tapply(agg$kept, agg$age2, mean)
+```
+We can see that our two worst offenders are appointments after 3:00 PM with 59.4% show rate and our youngest age bracket >17 years old at 59.7% show rate.
