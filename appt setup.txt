@@ -20,31 +20,27 @@ test <- read.csv("appt_test.csv")
 #view the structure of the table
 str(train)
 
-#use absolute to change column to positive intergers
-train$apptDiff <- abs(train$apptDiff)
-test$apptDiff <- abs(test$apptDiff)
-
-#setting up tod (time of day) column
+#setting up tod (time of day) column in each dataset
 train$tod <- 0 #morning 7-11:30
-train$tod[train$begintime < 1500 & train$begintime >= 1140] <- 1 #mid day 1140-3
-train$tod[train$begintime >= 1510] <- 2 #evening 3:10-7
+train$tod[train$time < 1500 & train$time >= 1140] <- 1 #mid day 1140-3
+train$tod[train$time >= 1510] <- 2 #evening 3:10-7
 
 test$tod <- 0 #morning 7-11:30
-test$tod[test$begintime < 1500 & test$begintime >= 1140] <- 1 #mid day 1140-3
-test$tod[test$begintime >= 1510] <- 2 #evening 3:10-7
+test$tod[test$time < 1500 & test$time >= 1140] <- 1 #mid day 1140-3
+test$tod[test$time >= 1510] <- 2 #evening 3:10-7
 
-#creating age brackets
+#creating age buckets
 train$age2 <- 0
-train$age2[train$Age >= 17 & train$Age <=21] <- 1
-train$age2[train$Age >= 22 & train$Age <=25] <- 2
-train$age2[train$Age >= 26 & train$Age <=30] <- 3
-train$age2[train$Age >= 31] <- 4
+train$age2[train$age >= 17 & train$age <=21] <- 1
+train$age2[train$age >= 22 & train$age <=25] <- 2
+train$age2[train$age >= 26 & train$age <=30] <- 3
+train$age2[train$age >= 31] <- 4
 
 test$age2 <- 0
-test$age2[test$Age >= 17 & test$Age <=21] <- 1
-test$age2[test$Age >= 22 & test$Age <=25] <- 2
-test$age2[test$Age >= 26 & test$Age <=30] <- 3
-test$age2[test$Age >= 31] <- 4
+test$age2[test$age >= 17 & test$age <=21] <- 1
+test$age2[test$age >= 22 & test$age <=25] <- 2
+test$age2[test$age >= 26 & test$age <=30] <- 3
+test$age2[test$age >= 31] <- 4
 
 #create column for grouping creation of appointment and date of appointment
 train$appt2 <- 0
@@ -58,13 +54,6 @@ test$appt2[test$apptDiff >= 0 & test$apptDiff <= 1] <- 1
 test$appt2[test$apptDiff >= 2 & test$apptDiff <= 3] <- 2
 test$appt2[test$apptDiff >= 4 & test$apptDiff <= 6] <- 3
 test$appt2[test$apptDiff >= 7] <- 4
-
-#mark missed appointments as 0, kept as 1, 
-train$kept <- 0
-train$kept[train$appt_kept_ind == 'Y'] <- 1
-
-test$kept <- 0
-test$kept[test$appt_kept_ind == 'Y'] <- 1
 
 #converting patient no-show risk to numeric values
 train$riskLevel[train$risk == 'Low'] <- 0
@@ -86,15 +75,12 @@ str(train)
 table(train$kept)
 prop.table(table(train$kept))
 
-#View kept appointment proportions based on patients gender
-prop.table(table(train$sex, train$kept), 1)
-
 #Create a function that takes the subset vector as input and applies both the sum and length commands to it and then does the #division to give us a proportion of patients based on their age bracket and the time of day of their appointment to evaluate
 #if both factors together play a role in showing to an appointment
 #multiplied by 100 and rounded to create a whole for easier viewing
 aggregate(kept ~ age2 + tod, data=train, FUN=function(x) round({sum(x)/length(x) * 100}))
 
-#While there was a slight variance between certain ages and time of day, for the most part it was pretty consistent at 55-57%
+#26-30 year olds had the worse showrate averge, 58.3, due to a 51% rate in the evenings
 
 #lets evaluate the patients risk level and the time of day
 aggregate(kept ~ riskLevel + tod, data=train, FUN=function(x) round({sum(x)/length(x) * 100}))
@@ -119,13 +105,15 @@ predict$accu[predict$kept != predict$keptPred] <- 0
 #view the accuracy
 prop.table(table(predict$accu))
 
+#Total accuracy of 69.29%
+
 #lets compare random forst with rpart for accuracy
 #set seed for reproducability
 set.seed(299)
 
 #using importance to compare variables for their level of influence and setting the number of trees to 2000
 #If you are using a large dataset reducing the number of trees, using nodesize or sampsize may be necessary.
-fit <- randomForest(as.factor(kept) ~ age2 + riskLevel + tod + location_name + event + apptDiff,
+fit <- randomForest(as.factor(kept) ~ age2 + risk + tod + loc + event + apptDiff,
                 data = test,
                 importance=TRUE,
 		ntree=2000)
@@ -139,4 +127,4 @@ predict$accu[predict$kept == predict$keptPred] <- 1
 predict$accu[predict$kept != predict$keptPred] <- 0
 prop.table(table(predict$accu))
 
-#using random forest increased our accuracy by over 10%!
+#using random forest increased our accuracy to 90.9%
